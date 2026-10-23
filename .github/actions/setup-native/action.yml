@@ -1,0 +1,111 @@
+name: setup-native
+description: >
+  Provisions the native build prerequisites exactly like the local dev setup (docs/contracts.md section 0):
+  CUDA 12.9.1 redist (nvcc/cudart/cccl zips, sha256-pinned), TensorRT 11.4 public headers (tag v11.4),
+  TensorRT lean runtime DLL (pip tensorrt-lean-cu12==11.4.0.106), and the LGPL FFmpeg SDK built by
+  ffmpeg-lgpl.yml. Exports CUDA_PATH, TENSORRT_INCLUDE(_DIR), FB_TRT_LEAN_DLL, FFMPEG_DIR and friends.
+inputs:
+  ffmpeg-artifact:
+    description: Name of the artifact produced by ffmpeg-lgpl.yml ('' = do not fetch FFmpeg)
+    default: ffmpeg-lgpl
+runs:
+  using: composite
+  steps:
+    # ---- MSVC environment (cl, link, ninja-compatible env) -------------------------------------
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    # ---- CUDA 12.9.1 from the NVIDIA redist archives (cached) -----------------------------------
+    - name: Cache .tools (CUDA + TensorRT headers)
+      id: tools-cache
+      uses: actions/cache@v4
+      with:
+        path: .tools
+        key: native-tools-win64-cuda12.9.1-trt11.4-v1
+
+    - name: Install CUDA 12.9.1 redist archives
+      if: steps.tools-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $cuda = Join-Path $env:GITHUB_WORKSPACE '.tools\cuda'
+        New-Item -ItemType Directory -Force $cuda | Out-Null
+        # versions + sha256 from https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json
+        $items = @(
+          @{ n = 'cuda_nvcc';   f = 'cuda_nvcc-windows-x86_64-12.9.86-archive.zip';   sha = '227b109663b5e57d2718bcabb24a4ba0d9d4e52d958e327dc476f7c28691be85' },
+          @{ n = 'cuda_cudart'; f = 'cuda_cudart-windows-x86_64-12.9.79-archive.zip'; sha = '179e9c43b0735ffe67207b3da556eb5a0c50f3047961882b7657d3b822d34ef8' },
+          @{ n = 'cuda_cccl';   f = 'cuda_cccl-windows-x86_64-12.9.27-archive.zip';   sha = '17aaa7c6b8f94a417d8f3261780b7e34b9cbdfab7513bce86768623b06aa28b5' }
+        )
+        foreach ($i in $items) {
+          $url = "https://developer.download.nvidia.com/compute/cuda/redist/$($i.n)/windows-x86_64/$($i.f)"
+          $zip = Join-Path $env:RUNNER_TEMP $i.f
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $i.sha) { throw "sha256 mismatch for $($i.f): $h" }
+          $x = Join-Path $env:RUNNER_TEMP ('x_' + $i.n)
+          Expand-Archive -Path $zip -DestinationPath $x -Force
+          $top = Get-ChildItem $x -Directory | Select-Object -First 1
+          Copy-Item (Join-Path $top.FullName '*') $cuda -Recurse -Force
+        }
+        & (Join-Path $cuda 'bin\nvcc.exe') --version
+
+    # ---- TensorRT 11.4 public headers (github NVIDIA/TensorRT tag v11.4, only include/) ---------
+    - name: TensorRT headers
+      if: steps.tools-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $tmp = Join-Path $env:RUNNER_TEMP 'trt-src'
+        git clone --depth 1 --branch v11.4 --filter=blob:none --sparse https://github.com/NVIDIA/TensorRT $tmp
+        git -C $tmp sparse-checkout set include
+        $dst = Join-Path $env:GITHUB_WORKSPACE '.tools\tensorrt\include'
+        New-Item -ItemType Directory -Force $dst | Out-Null
+        Copy-Item (Join-Path $tmp 'include\*') $dst -Recurse -Force
+        if (-not (Test-Path (Join-Path $dst 'NvInferRuntime.h'))) { throw 'NvInferRuntime.h missing' }
+
+    # ---- TensorRT lean runtime DLL (redistributable part only) ----------------------------------
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: TensorRT lean runtime (pip)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        python -m pip install --upgrade pip
+        python -m pip install "tensorrt-lean-cu12==11.4.0.106" --extra-index-url https://pypi.nvidia.com
+        $dll = python -c "import os, tensorrt_lean_libs as m; print(os.path.join(os.path.dirname(m.__file__), 'nvinfer_lean_11.dll'))"
+        if (-not (Test-Path $dll)) { throw "nvinfer_lean_11.dll not found at $dll" }
+        "FB_TRT_LEAN_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    # ---- environment ------------------------------------------------------------------------------
+    - name: Export environment
+      shell: pwsh
+      run: |
+        $ws = $env:GITHUB_WORKSPACE
+        $cuda = Join-Path $ws '.tools\cuda'
+        $trt = Join-Path $ws '.tools\tensorrt\include'
+        $lines = @(
+          "CUDA_PATH=$cuda",
+          "CUDAToolkit_ROOT=$cuda",
+          "TENSORRT_INCLUDE=$trt",
+          "TENSORRT_INCLUDE_DIR=$trt",
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
+        )
+        $lines | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "$cuda\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+    # ---- FFmpeg (LGPL build from ffmpeg-lgpl.yml) --------------------------------------------------
+    - uses: actions/download-artifact@v4
+      if: inputs.ffmpeg-artifact != ''
+      with:
+        name: ${{ inputs.ffmpeg-artifact }}
+        path: third_party/ffmpeg/dist
+    - name: Export FFmpeg environment
+      if: inputs.ffmpeg-artifact != ''
+      shell: pwsh
+      run: |
+        $d = Join-Path $env:GITHUB_WORKSPACE 'third_party\ffmpeg\dist'
+        @("FFMPEG_DIR=$d", "FFMPEG_INCLUDE_DIR=$d\include", "FFMPEG_LIBS_DIR=$d\lib") |
+          Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        Get-ChildItem "$d\bin\*.dll" | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }

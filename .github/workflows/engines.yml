@@ -1,0 +1,151 @@
+name: engines
+
+# Builds the TensorRT engines (models/ pipeline) on a SELF-HOSTED Windows runner that has an NVIDIA GPU
+# and uploads engines + manifest.json to the GitHub Release `engines-v1`.
+#
+# Runner requirements (one-time provisioning of the box):
+#   labels:   self-hosted, windows, gpu            (+ `turing` for the optional sm75 job)
+#   software: Python 3.12 (py launcher), Git, NVIDIA driver R570+, `gh` CLI (or GITHUB_TOKEN with contents: write)
+#   The models pipeline expects the project layout of docs/contracts.md section 0: .venv/, .tools/cuda (for cudart64_12.dll).
+#   This workflow recreates .venv with the packages listed below (or models/requirements.txt when it exists).
+#
+# SECURITY: never run self-hosted runners for pull requests from forks. This workflow only triggers on
+# pushes to main and manual dispatch.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'models/**'
+      - '.github/workflows/engines.yml'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release that receives the engines
+        default: engines-v1
+      build_sm75:
+        description: Also build sm75 (Turing) engines on a runner labelled `turing`
+        type: boolean
+        default: false
+
+permissions:
+  contents: write     # create / update the release
+
+concurrency:
+  group: engines
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.release_tag || 'engines-v1' }}
+
+jobs:
+  ampere:
+    name: engines (ampere+)
+    runs-on: [self-hosted, windows, gpu]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GPU info
+        run: nvidia-smi
+
+      - name: Python environment (.venv)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          py -3.12 -m venv .venv
+          $py = '.\.venv\Scripts\python.exe'
+          & $py -m pip install --upgrade pip
+          if (Test-Path models/requirements.txt) {
+            & $py -m pip install -r models/requirements.txt --extra-index-url https://pypi.nvidia.com
+          } else {
+            # same set as docs/contracts.md section 0 (CPU torch is enough: export only)
+            & $py -m pip install --extra-index-url https://pypi.nvidia.com `
+              "tensorrt-cu12==11.4.0.106" "tensorrt-lean-cu12==11.4.0.106" "tensorrt-dispatch-cu12==11.4.0.106" `
+              "nvidia-cuda-runtime-cu12==12.9.79" `
+              onnx onnxruntime onnxslim spandrel numpy opencv-python
+            & $py -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          }
+
+      - name: Download weights, export + validate ONNX
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $py = '.\.venv\Scripts\python.exe'
+          & $py models/download_weights.py
+          & $py models/export_onnx.py
+          & $py models/validate_onnx.py            # PSNR vs PyTorch must stay above 40 dB (script exits non-zero otherwise)
+
+      - name: Build engines (VERSION_COMPATIBLE + EXCLUDE_LEAN_RUNTIME + AMPERE_PLUS)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\.venv\Scripts\python.exe models/build_engines.py --arch ampere+
+          if ($LASTEXITCODE -ne 0) { throw "build_engines failed" }
+
+      - name: Lean-runtime load test + FPS (fills fps_1080p in the manifest)
+        run: |
+          & .\.venv\Scripts\python.exe models/bench_engines.py
+          if ($LASTEXITCODE -ne 0) { throw "bench_engines failed" }
+
+      - name: Prepare release assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = 'engines-release'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item models/engines/*.engine $stage
+          # the release manifest must carry the real base_url
+          $m = Get-Content models/engines/manifest.json -Raw
+          $m = $m -replace '/OWNER/', ('/' + '${{ github.repository_owner }}' + '/')
+          [IO.File]::WriteAllText((Join-Path (Get-Location) "$stage/manifest.json"), $m, (New-Object Text.UTF8Encoding($false)))
+          Get-ChildItem $stage | Format-Table Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engines-ampere
+          path: engines-release/*
+          retention-days: 30
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release view $env:RELEASE_TAG 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --title "Model engines ($env:RELEASE_TAG)" `
+              --notes "TensorRT engines + manifest.json for filming-better (TensorRT 11.4, CUDA 12 runtime, hardware-compat AMPERE_PLUS). Downloaded by ``filming-better models pull``." --prerelease
+          }
+          gh release upload $env:RELEASE_TAG (Get-ChildItem engines-release).FullName --clobber
+
+  sm75:
+    name: engines (sm75 / Turing)
+    if: ${{ github.event.inputs.build_sm75 == 'true' }}
+    needs: ampere
+    runs-on: [self-hosted, windows, gpu, turing]
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sm75 engines (must run on a cc 7.5 GPU, build_engines.py refuses otherwise)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          py -3.12 -m venv .venv
+          $py = '.\.venv\Scripts\python.exe'
+          & $py -m pip install --upgrade pip
+          & $py -m pip install --extra-index-url https://pypi.nvidia.com "tensorrt-cu12==11.4.0.106" `
+            "tensorrt-lean-cu12==11.4.0.106" "nvidia-cuda-runtime-cu12==12.9.79" onnx onnxruntime numpy opencv-python
+          & $py models/download_weights.py
+          & $py models/export_onnx.py
+          & $py models/build_engines.py --arch sm75
+      - name: Upload sm75 engines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem models/engines/*.sm75.engine
+          if (-not $files) { throw 'no sm75 engines produced' }
+          # merge: the manifest from the Turing box only knows sm75 entries -> upload under a different name,
+          # a maintainer merges it into manifest.json (or extend build_engines.py to merge with the release manifest).
+          Copy-Item models/engines/manifest.json models/engines/manifest.sm75.json
+          gh release upload $env:RELEASE_TAG ($files.FullName + (Resolve-Path models/engines/manifest.sm75.json).Path) --clobber

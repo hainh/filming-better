@@ -1,0 +1,32 @@
+{
+    "version": "0.1.0",
+    "description": "GPU video upscaler + frame interpolator (TensorRT, NVDEC/NVENC) - CLI for NVIDIA RTX 20+ (driver R570+)",
+    "homepage": "https://github.com/OWNER/filming-better",
+    "license": "MIT",
+    "notes": [
+        "Requires an NVIDIA GPU (RTX 20 series or newer) with driver R570 or newer.",
+        "Run `filming-better gpu-info` to check, `filming-better models pull span_x2 rife_v4` if engines are missing."
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/OWNER/filming-better/releases/download/v0.1.0/filming-better-0.1.0-win64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "extract_dir": "filming-better-0.1.0-win64"
+        }
+    },
+    "bin": "filming-better.exe",
+    "checkver": {
+        "github": "https://github.com/OWNER/filming-better"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/OWNER/filming-better/releases/download/v$version/filming-better-$version-win64.zip",
+                "hash": {
+                    "url": "$url.sha256"
+                },
+                "extract_dir": "filming-better-$version-win64"
+            }
+        }
+    }
+}

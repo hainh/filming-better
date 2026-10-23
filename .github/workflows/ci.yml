@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned toolchain versions (risk table: "Ghim phien ban CUDA, TensorRT, Rust trong CI").
+  # CUDA 12.9.1 redist + TensorRT 11.4.0.106 (cu12) are pinned in .github/actions/setup-native,
+  # FFmpeg n8.0.1 + nv-codec-headers n13.0.19.1 in third_party/ffmpeg/build_ffmpeg_lgpl.sh.
+  RUST_VERSION: "1.99.1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+      - run: cargo fmt --manifest-path app/Cargo.toml --all -- --check
+
+  scripts:
+    # lint packaging / test scripts and dry-run the FFmpeg configure (cheap, no toolchain needed)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n + FFmpeg dry-run
+        shell: bash
+        run: |
+          for f in third_party/ffmpeg/build_ffmpeg_lgpl.sh tests/scripts/*.sh; do bash -n "$f"; done
+          bash third_party/ffmpeg/build_ffmpeg_lgpl.sh --dry-run
+      - name: PowerShell parse check (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\packaging\make_portable.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { $errs | ForEach-Object { Write-Error $_ }; exit 1 }
+
+  ffmpeg:
+    uses: ./.github/workflows/ffmpeg-lgpl.yml
+
+  rust:
+    needs: ffmpeg
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - uses: ./.github/actions/setup-native
+
+      - name: Clippy (build.rs compiles fb_native, needs CUDA + TensorRT headers)
+        run: cargo clippy --manifest-path app/Cargo.toml --all-targets --locked -- -D warnings
+
+      # No GPU on hosted runners: tests that need a device must be #[ignore] (run them on the self-hosted GPU runner).
+      - name: cargo test (GPU-free)
+        run: cargo test --manifest-path app/Cargo.toml --locked
+
+      - name: fb_native C++ tests (build only - running them needs a GPU)
+        run: |
+          cmake -S app/native -B build/native-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DFB_BUILD_TESTS=ON `
+            "-DTENSORRT_INCLUDE_DIR=$env:TENSORRT_INCLUDE" "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+          cmake --build build/native-tests

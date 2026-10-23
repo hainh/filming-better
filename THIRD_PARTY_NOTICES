@@ -1,0 +1,128 @@
+THIRD-PARTY NOTICES - filming-better
+====================================
+
+filming-better itself is released under the MIT License (see LICENSE).
+The release package also contains, or downloads on demand, the third-party
+components listed below. Each is distributed under its own license.
+
+If you redistribute filming-better, keep this file, LICENSE and BUILD_CONFIG.txt
+with it.
+
+-------------------------------------------------------------------------------
+1. FFmpeg  (libavcodec, libavformat, libavutil, libswscale, libswresample)
+-------------------------------------------------------------------------------
+  Files:    avcodec-*.dll avformat-*.dll avutil-*.dll swscale-*.dll swresample-*.dll
+  License:  GNU Lesser General Public License, version 2.1 or later (LGPL-2.1+)
+  Project:  https://ffmpeg.org/   Copyright (c) the FFmpeg developers
+  Source:   https://ffmpeg.org/download.html  (git: https://git.ffmpeg.org/ffmpeg.git)
+            The exact tag and commit are recorded in BUILD_CONFIG.txt.
+            The FFmpeg source is unmodified upstream source.
+
+  How FFmpeg is used / how to comply:
+  * FFmpeg is built with `--disable-gpl --disable-nonfree --disable-version3`
+    by third_party/ffmpeg/build_ffmpeg_lgpl.sh. No GPL components (x264, x265,
+    ...) and no non-free components (libfdk-aac, CUDA nvcc filters, libnpp) are
+    included. The build script fails if the resulting libraries are not LGPL.
+  * FFmpeg is linked DYNAMICALLY. You may replace these DLLs with your own build
+    of the same FFmpeg major versions (see BUILD_CONFIG.txt for the full configure
+    command line) and filming-better will use them; this satisfies LGPL section 6.
+  * The LGPL-2.1 text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+  * Hardware encode/decode go through NVIDIA's NVENC/NVDEC. The FFmpeg headers for
+    these APIs come from nv-codec-headers (MIT license,
+    https://github.com/FFmpeg/nv-codec-headers, tag n13.0.19.1). They are
+    compile-time only; the NVIDIA driver provides the runtime libraries.
+  * The Rust bindings `rsmpeg` and `rusty_ffmpeg` are MIT licensed.
+
+-------------------------------------------------------------------------------
+2. NVIDIA TensorRT lean runtime
+-------------------------------------------------------------------------------
+  Files:    nvinfer_lean_11.dll
+  License:  NVIDIA TensorRT Software License Agreement (SLA)
+            https://docs.nvidia.com/deeplearning/tensorrt/sla/index.html
+  Notes:    Only the files that the SLA ("Attachment A - Redistributable
+            Software" / redistributable runtime) lists as redistributable are
+            shipped: the TensorRT *lean* runtime. The TensorRT builder
+            (nvinfer_11.dll, nvinfer_builder_resource_*.dll, parsers, plugins)
+            is NOT distributed. Engines are built offline with the builder and
+            are run by the lean runtime (version-compatible engines).
+            TensorRT is a trademark of NVIDIA Corporation.
+  Check:    Re-verify the redistributable list in the SLA of the TensorRT
+            version being shipped whenever TensorRT is upgraded.
+
+-------------------------------------------------------------------------------
+3. NVIDIA CUDA runtime
+-------------------------------------------------------------------------------
+  Component: CUDA Runtime (cudart), version 12.9, linked STATICALLY into
+             fb_native.dll (so no cudart64_*.dll is shipped).
+  License:   NVIDIA CUDA Toolkit End User License Agreement
+             https://docs.nvidia.com/cuda/eula/index.html
+             (cudart is listed in Attachment A as redistributable.)
+  Not shipped: nvcc, CUDA libraries other than the static runtime, the NVIDIA
+             display driver. The program requires an NVIDIA driver (R570 or
+             newer, see README) which provides nvcuda.dll, nvcuvid.dll and
+             nvEncodeAPI64.dll; those belong to the user's driver installation.
+
+-------------------------------------------------------------------------------
+4. Microsoft Visual C++ runtime (only if present in the package)
+-------------------------------------------------------------------------------
+  Files:    vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll (app-local copy)
+  License:  Microsoft Visual Studio redistributable terms ("Distributable Code",
+            https://visualstudio.microsoft.com/license-terms/).
+
+-------------------------------------------------------------------------------
+5. Neural-network model weights (engines in models/)
+-------------------------------------------------------------------------------
+  The .engine files are TensorRT-compiled forms of the following publicly
+  released weights. Authoritative per-model data (license, source, SHA-256) is in
+  models/manifest.json and models/download_weights.py in the source repository.
+
+  span_x2         SPAN 2x - weights "2xNomosUni_span_multijpg"
+                  by Helaman / Phhofm (https://github.com/Phhofm/models)
+                  License: CC BY 4.0 (attribution required: "2xNomosUni_span_multijpg
+                  by Helaman / Phhofm, CC BY 4.0, https://creativecommons.org/licenses/by/4.0/").
+                  Architecture: SPAN by Cheng Wan et al., "Swift Parameter-free
+                  Attention Network" (https://github.com/hongyuanyu/SPAN), Apache-2.0.
+                  The weights are converted to ONNX and compiled to an engine
+                  (a modification in format only).
+  animevideov3_x4 Real-ESRGAN "realesr-animevideov3" (https://github.com/xinntao/Real-ESRGAN)
+                  License: BSD 3-Clause, Copyright (c) 2021 Xintao Wang.
+  x4plus          Real-ESRGAN "RealESRGAN_x4plus" (optional download)
+                  License: BSD 3-Clause, Copyright (c) 2021 Xintao Wang.
+  rife_v4         RIFE 4.x flownet weights (https://github.com/hzwer/Practical-RIFE,
+  rife_v4_lite    converted by https://github.com/HolyWu/vs-rife). Code and weights: MIT,
+                  Copyright (c) hzwer (Huang Zhewei) et al.
+
+  Model weights are not part of the MIT-licensed project code. Engines other than
+  the default set are downloaded on request (`filming-better models pull <id>`)
+  and verified by SHA-256.
+
+-------------------------------------------------------------------------------
+6. Rust crates (statically linked into filming-better.exe)
+-------------------------------------------------------------------------------
+  The full, automatically generated list (name, version, license text) is produced at release
+  time with `cargo about` (config: packaging/about.toml, template: packaging/about.hbs):
+      cargo install cargo-about --locked
+      cargo about generate packaging/about.hbs --manifest-path app/Cargo.toml > THIRD_PARTY_RUST.html
+  and is shipped as THIRD_PARTY_RUST.html next to this file when produced.
+  Principal direct dependencies (see app/Cargo.toml / app/Cargo.lock):
+
+    anyhow, thiserror, serde, serde_json, clap, crossbeam-channel, ctrlc,
+    tracing, tracing-subscriber, toml, glob, sha2, hex, dirs, reqwest (+hyper, tokio),
+    rsmpeg, rusty_ffmpeg ......................... MIT OR Apache-2.0  (rsmpeg/rusty_ffmpeg: MIT)
+    indicatif, console ........................... MIT
+    zip .......................................... MIT
+    png (preview images) ......................... MIT OR Apache-2.0
+    rustls, rustls-webpki ........................ Apache-2.0 OR ISC OR MIT / ISC
+    ring ......................................... Apache-2.0 AND ISC (contains code derived from BoringSSL/OpenSSL)
+    webpki-roots ................................. CDLA-Permissive-2.0 (Mozilla CA bundle)
+  Build-time only (not distributed): bindgen (BSD-3-Clause), cmake (MIT OR Apache-2.0).
+  Their licenses permit redistribution in binary form provided the copyright and
+  license notices are retained; full texts are in THIRD_PARTY_RUST.html / each
+  crate's repository on https://crates.io.
+
+-------------------------------------------------------------------------------
+Trademarks
+-------------------------------------------------------------------------------
+NVIDIA, CUDA, TensorRT, NVENC and NVDEC are trademarks of NVIDIA Corporation.
+FFmpeg is a trademark of Fabrice Bellard. This project is not affiliated with
+or endorsed by any of them.

@@ -1,0 +1,44 @@
+[package]
+name = "filming-better"
+version = "0.1.0"
+edition = "2021"
+description = "Upscale + frame interpolation CLI (TensorRT + NVDEC/NVENC)"
+license = "MIT"
+build = "build.rs"
+
+[[bin]]
+name = "filming-better"
+path = "src/main.rs"
+
+[dependencies]
+# --- shared ---
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# --- core agent (cli/io/pipeline) ---
+clap = { version = "4", features = ["derive", "wrap_help"] }
+indicatif = "0.17"
+crossbeam-channel = "0.5"
+ctrlc = "3"
+rsmpeg = { version = "0.18", default-features = false, features = ["ffmpeg8", "link_system_ffmpeg"] }
+png = "0.17"
+# --- models/config agent ---
+toml = "0.8"
+glob = "0.3"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "5"
+hex = "0.4"
+
+[build-dependencies]
+bindgen = "0.71"
+cmake = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

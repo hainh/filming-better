@@ -1,0 +1,41 @@
+# filming-better configuration
+#
+# Location: %APPDATA%\filming-better\config.toml  (or pass --config <file>).
+# Every key is optional. Precedence: command-line option > preset > this file > built-in default.
+# (If the preset is named here in the file, values written in this file win over the preset.)
+#
+# Uncomment and edit the lines you want.
+
+# Preset: fast | balanced | quality
+#   fast     = span_x2,         2x interpolation, hevc, cq 24
+#   balanced = span_x2,         2x interpolation, hevc, cq 20
+#   quality  = animevideov3_x4, 2x interpolation, hevc, cq 18
+# preset = "balanced"
+
+# Upscale model id (see `filming-better models list`)
+# upscale = "span_x2"
+
+# Frame interpolation factor (1 = off, 2 = double the frame rate, ...)
+# interp = 2
+
+# Output codec: h264 | hevc | av1
+# codec = "hevc"
+
+# NVENC constant quality (0-51, lower = better quality / bigger file)
+# cq = 20
+
+# Processing order (see `filming-better run --help`)
+# order = "interp-first"
+
+# Scene-cut sensitivity: frames are duplicated instead of interpolated across cuts
+# scene_threshold = 0.3
+
+# Where batch output goes, and the output file name template
+# output_dir = "D:\\out"
+# name_template = "{stem}_fb"
+
+# Tile size in pixels for upscaling when VRAM is short (0 / unset = automatic)
+# tile = 0
+
+# Write a detailed log here (useful for `filming-better report`)
+# log_file = "C:\\Users\\you\\filming-better.log"

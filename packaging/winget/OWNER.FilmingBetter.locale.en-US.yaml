@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: OWNER.FilmingBetter
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: filming-better contributors
+PublisherUrl: https://github.com/OWNER
+PublisherSupportUrl: https://github.com/OWNER/filming-better/issues
+PackageName: filming-better
+PackageUrl: https://github.com/OWNER/filming-better
+License: MIT
+LicenseUrl: https://github.com/OWNER/filming-better/blob/main/LICENSE
+Copyright: Copyright (c) filming-better contributors
+ShortDescription: GPU video upscaler and frame interpolator (TensorRT + NVDEC/NVENC), command line.
+Description: |-
+  filming-better upscales (x2/x4) and interpolates frames (x2/x3/x4) of videos entirely on an NVIDIA GPU
+  (RTX 20 series or newer, driver R570+). Audio, subtitles and chapters are copied unchanged.
+  Command line only. Third-party components (FFmpeg LGPL, NVIDIA TensorRT lean runtime) are listed in THIRD_PARTY_NOTICES.
+Moniker: filming-better
+Tags:
+  - video
+  - upscale
+  - interpolation
+  - nvidia
+  - tensorrt
+  - cli
+ReleaseNotesUrl: https://github.com/OWNER/filming-better/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

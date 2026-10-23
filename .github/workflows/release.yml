@@ -1,0 +1,173 @@
+name: release
+
+# Tag `vX.Y.Z` -> release build -> portable zip (<= 200 MB) -> Inno Setup installer (<= 70 MB) -> GitHub Release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build when run manually (without the leading v)
+        required: true
+
+permissions:
+  contents: write         # create the release and upload assets
+  # id-token: write       # <- needed for SignPath trusted build artifact signing (see the signing stub below)
+
+env:
+  RUST_VERSION: "1.99.1"
+  ENGINES_RELEASE: engines-v1
+  MAX_ZIP_MB: "200"
+  MAX_INSTALLER_MB: "70"     # blueprint 4.4; the installer does NOT embed engines (see packaging/installer.iss)
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ffmpeg:
+    uses: ./.github/workflows/ffmpeg-lgpl.yml
+
+  build:
+    needs: ffmpeg
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') { $ver = '${{ github.event.inputs.version }}' }
+          else { $ver = '${{ github.ref_name }}' }
+          $ver = $ver.TrimStart('v')
+          $cargo = (Select-String -Path app/Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($cargo -ne $ver) { throw "tag/version '$ver' does not match app/Cargo.toml version '$cargo'" }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "prerelease=$(if ($ver -match '-') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - uses: ./.github/actions/setup-native
+
+      - name: Build release (exe + fb_native.dll + nvinfer_lean + FFmpeg DLLs next to it)
+        run: cargo build --release --locked --manifest-path app/Cargo.toml
+
+      - name: Third-party Rust licenses (cargo about)
+        shell: pwsh
+        run: |
+          cargo install cargo-about --locked --version 0.8.4
+          cargo about generate --config packaging/about.toml --manifest-path app/Cargo.toml packaging/about.hbs `
+            --output-file THIRD_PARTY_RUST.html
+
+      - name: Fetch default engines + manifest from the engines release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force models/engines | Out-Null
+          gh release download $env:ENGINES_RELEASE --dir models/engines --clobber `
+            --pattern 'manifest.json' --pattern 'span_x2.ampere+.engine' --pattern 'rife_v4.ampere+.engine'
+          Get-ChildItem models/engines
+
+      # ----------------------------------------------------------------------------------------------
+      # Portable package + size check (fails the build when the zip is bigger than MAX_ZIP_MB).
+      # -Strict: placeholder hashes in the manifest are errors. The script also refuses GPL FFmpeg DLLs.
+      # ----------------------------------------------------------------------------------------------
+      - name: Portable zip
+        shell: powershell
+        run: |
+          ./packaging/make_portable.ps1 -Version '${{ steps.v.outputs.version }}' `
+            -ReleaseDir app/target/release -FFmpegDir third_party/ffmpeg/dist/bin `
+            -ManifestPath models/engines/manifest.json -EnginesDir models/engines `
+            -RepoOwner '${{ github.repository_owner }}' -MaxZipMB ${{ env.MAX_ZIP_MB }} -Strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # ----------------------------------------------------------------------------------------------
+      # SIGNING STUB (SignPath, free for open-source projects) - disabled until a SignPath project exists.
+      #  1. Apply at https://signpath.org/ (OSS foundation), create project + signing policy, install the GitHub app.
+      #  2. Uncomment `id-token: write` in `permissions:` above and add the secret SIGNPATH_API_TOKEN.
+      #  3. Replace the placeholders below, remove `if: false`.
+      #  The exe and DLLs must be signed BEFORE the installer/zip are built (move this step above "Portable zip"
+      #  and sign dist/filming-better-*/ *.exe + fb_native.dll), then sign the installer exe a second time.
+      # ----------------------------------------------------------------------------------------------
+      # - name: Upload unsigned artifact for SignPath
+      #   if: false
+      #   id: unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: unsigned
+      #     path: dist/filming-better-${{ steps.v.outputs.version }}-win64/*.exe
+      # - name: Sign with SignPath
+      #   if: false
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: '<SIGNPATH_ORG_ID>'
+      #     project-slug: 'filming-better'
+      #     signing-policy-slug: 'release-signing'
+      #     github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: dist/signed
+      #  (alternative without SignPath: signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx ...)
+
+      - name: Installer (Inno Setup 6, LZMA2 solid, no engines embedded)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --version=6.5.4 -y --no-progress }
+          & $iscc "/DAppVersion=${{ steps.v.outputs.version }}" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem dist | Format-Table Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
+
+      - name: Size check (installer <= MAX_INSTALLER_MB, zip <= MAX_ZIP_MB)
+        shell: powershell
+        run: |
+          ./packaging/make_portable.ps1 -Version '${{ steps.v.outputs.version }}' -CheckSizesOnly `
+            -MaxZipMB ${{ env.MAX_ZIP_MB }} -MaxInstallerMB ${{ env.MAX_INSTALLER_MB }} `
+            -InstallerPath "dist/filming-better-${{ steps.v.outputs.version }}-setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/*-setup.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            Set-Content -Path ($_.FullName + '.sha256') -Value ("$h  $($_.Name)") -Encoding ascii
+          }
+          Get-ChildItem dist -File | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filming-better-${{ steps.v.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: filming-better ${{ steps.v.outputs.version }}
+          prerelease: ${{ steps.v.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+            third_party/ffmpeg/dist/BUILD_CONFIG.txt
+
+      # winget / Scoop (manual or automated):
+      #   scoop:  the bucket's `checkver`/`autoupdate` in packaging/scoop/filming-better.json picks up the release.
+      #   winget: wingetcreate update OWNER.FilmingBetter --version <ver> `
+      #             --urls https://github.com/OWNER/filming-better/releases/download/v<ver>/filming-better-<ver>-setup.exe `
+      #             --submit --token <PAT with public_repo>      (needs the first manifest merged into microsoft/winget-pkgs)

@@ -1,0 +1,62 @@
+name: ffmpeg-lgpl
+
+# Reusable: builds the minimal LGPL shared FFmpeg (third_party/ffmpeg/build_ffmpeg_lgpl.sh) with MSYS2 + MSVC.
+# The script itself FAILS if the result is not LGPL-only (risk table: "Dinh GPL do FFmpeg").
+# The result is cached by the hash of the script and uploaded as artifact `ffmpeg-lgpl`
+# (bin/ lib/ include/ BUILD_CONFIG.txt).
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached FFmpeg build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/ffmpeg/dist
+          key: ffmpeg-lgpl-${{ hashFiles('third_party/ffmpeg/build_ffmpeg_lgpl.sh') }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          arch: x64
+
+      - uses: msys2/setup-msys2@v2
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          msystem: MSYS
+          path-type: inherit        # keep cl.exe / link.exe from msvc-dev-cmd on PATH
+          update: false
+          install: >-
+            make diffutils git pkgconf nasm
+
+      - name: Build LGPL FFmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          # MSYS2's link.exe would shadow MSVC's linker
+          mv /usr/bin/link.exe /usr/bin/link.exe.bak || true
+          bash third_party/ffmpeg/build_ffmpeg_lgpl.sh --jobs "$(nproc)"
+
+      - name: Licence re-check of the (possibly cached) result
+        shell: bash
+        run: |
+          test -f third_party/ffmpeg/dist/BUILD_CONFIG.txt
+          grep -E "License +: LGPL" third_party/ffmpeg/dist/BUILD_CONFIG.txt
+          if grep -Eq -- "--enable-(gpl|nonfree|version3|libx264|libx265)" third_party/ffmpeg/dist/BUILD_CONFIG.txt; then
+            echo "GPL/nonfree flag found in BUILD_CONFIG.txt"; exit 1
+          fi
+          ls -la third_party/ffmpeg/dist/bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-lgpl
+          path: third_party/ffmpeg/dist
+          if-no-files-found: error
+          retention-days: 14
